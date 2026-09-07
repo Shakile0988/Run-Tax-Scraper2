@@ -61,45 +61,43 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build CLI arguments
-        id: args
+      - name: Run scraper
         shell: bash
+        env:
+          IN_COUNTY: ${{ github.event.inputs.county }}${{ github.event.client_payload.county }}
+          IN_COUNTY_URL: ${{ github.event.inputs.county_url }}${{ github.event.client_payload.county_url }}
+          IN_PARCEL: ${{ github.event.inputs.parcel }}${{ github.event.client_payload.parcel }}
+          IN_YEAR: ${{ github.event.inputs.year }}${{ github.event.client_payload.year }}
         run: |
-          # Values differ depending on how this workflow was triggered:
-          # workflow_dispatch (manual form) -> github.event.inputs.*
-          # repository_dispatch (webhook)    -> github.event.client_payload.*
-          COUNTY="${{ github.event.inputs.county }}${{ github.event.client_payload.county }}"
-          COUNTY_URL="${{ github.event.inputs.county_url }}${{ github.event.client_payload.county_url }}"
-          PARCEL="${{ github.event.inputs.parcel }}${{ github.event.client_payload.parcel }}"
-          YEAR="${{ github.event.inputs.year }}${{ github.event.client_payload.year }}"
+          cd src
 
-          ARGS=""
-          if [ -n "$COUNTY" ]; then
-            ARGS="$ARGS --county $COUNTY"
-          elif [ -n "$COUNTY_URL" ]; then
-            ARGS="$ARGS --county-url $COUNTY_URL"
+          # Build the argument list as a bash ARRAY (not a plain string).
+          # This is the key fix: arrays preserve spaces inside values like
+          # "B065 172" correctly, whereas a string passed through `eval`
+          # gets word-split and breaks on spaces.
+          ARGS=()
+
+          if [ -n "$IN_COUNTY" ]; then
+            ARGS+=(--county "$IN_COUNTY")
+          elif [ -n "$IN_COUNTY_URL" ]; then
+            ARGS+=(--county-url "$IN_COUNTY_URL")
           else
             echo "ERROR: either 'county' or 'county_url' must be provided." >&2
             exit 1
           fi
 
-          if [ -z "$PARCEL" ]; then
+          if [ -z "$IN_PARCEL" ]; then
             echo "ERROR: 'parcel' is required." >&2
             exit 1
           fi
-          ARGS="$ARGS --parcel \"$PARCEL\""
+          ARGS+=(--parcel "$IN_PARCEL")
 
-          if [ -n "$YEAR" ]; then
-            ARGS="$ARGS --year $YEAR"
+          if [ -n "$IN_YEAR" ]; then
+            ARGS+=(--year "$IN_YEAR")
           fi
 
-          echo "cli_args=$ARGS" >> "$GITHUB_OUTPUT"
-
-      - name: Run scraper
-        shell: bash
-        run: |
-          cd src
-          eval python cli.py ${{ steps.args.outputs.cli_args }} --json --out ../result.json
+          echo "Running: python cli.py ${ARGS[*]} --json --out ../result.json"
+          python cli.py "${ARGS[@]}" --json --out ../result.json
 
       - name: Upload result as artifact
         uses: actions/upload-artifact@v4
