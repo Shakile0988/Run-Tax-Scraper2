@@ -1,0 +1,112 @@
+name: Run Tax Scraper
+
+# Two ways to trigger this:
+#
+# 1) MANUAL (from the GitHub website):
+#    Go to Actions tab -> "Run Tax Scraper" -> "Run workflow" -> fill the
+#    form fields (county, parcel, year) -> Run workflow.
+#
+# 2) WEBHOOK (from n8n, once you're ready):
+#    Send a POST request to:
+#      https://api.github.com/repos/<YOUR_USERNAME>/<YOUR_REPO>/dispatches
+#    Headers:
+#      Authorization: Bearer <YOUR_GITHUB_PERSONAL_ACCESS_TOKEN>
+#      Accept: application/vnd.github+json
+#    Body (JSON):
+#      {
+#        "event_type": "run-tax-scraper",
+#        "client_payload": {
+#          "county": "brantley",
+#          "county_url": "",
+#          "parcel": "B065 172",
+#          "year": "2019"
+#        }
+#      }
+#    In n8n this is just an HTTP Request node (POST) with the above.
+
+on:
+  workflow_dispatch:
+    inputs:
+      county:
+        description: "Known county shortcut (brantley, chattooga, dawson, hall, pierce, union). Leave blank if using county_url instead."
+        required: false
+        default: ""
+      county_url:
+        description: "Direct county site URL (only needed if 'county' above is blank), e.g. https://www.dawsoncountytax.com"
+        required: false
+        default: ""
+      parcel:
+        description: "Parcel ID to search, e.g. B065 172"
+        required: true
+      year:
+        description: "Tax year to filter (leave blank for all years)"
+        required: false
+        default: ""
+
+  repository_dispatch:
+    types: [run-tax-scraper]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build CLI arguments
+        id: args
+        shell: bash
+        run: |
+          # Values differ depending on how this workflow was triggered:
+          # workflow_dispatch (manual form) -> github.event.inputs.*
+          # repository_dispatch (webhook)    -> github.event.client_payload.*
+          COUNTY="${{ github.event.inputs.county }}${{ github.event.client_payload.county }}"
+          COUNTY_URL="${{ github.event.inputs.county_url }}${{ github.event.client_payload.county_url }}"
+          PARCEL="${{ github.event.inputs.parcel }}${{ github.event.client_payload.parcel }}"
+          YEAR="${{ github.event.inputs.year }}${{ github.event.client_payload.year }}"
+
+          ARGS=""
+          if [ -n "$COUNTY" ]; then
+            ARGS="$ARGS --county $COUNTY"
+          elif [ -n "$COUNTY_URL" ]; then
+            ARGS="$ARGS --county-url $COUNTY_URL"
+          else
+            echo "ERROR: either 'county' or 'county_url' must be provided." >&2
+            exit 1
+          fi
+
+          if [ -z "$PARCEL" ]; then
+            echo "ERROR: 'parcel' is required." >&2
+            exit 1
+          fi
+          ARGS="$ARGS --parcel \"$PARCEL\""
+
+          if [ -n "$YEAR" ]; then
+            ARGS="$ARGS --year $YEAR"
+          fi
+
+          echo "cli_args=$ARGS" >> "$GITHUB_OUTPUT"
+
+      - name: Run scraper
+        shell: bash
+        run: |
+          cd src
+          eval python cli.py ${{ steps.args.outputs.cli_args }} --json --out ../result.json
+
+      - name: Upload result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tax-scraper-result
+          path: result.json
+          retention-days: 30
+
+      - name: Print result to log
+        run: cat result.json
