@@ -27,6 +27,7 @@ Usage:
 
 import re
 import json
+import time
 import requests
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
@@ -132,9 +133,9 @@ class TaxRecord:
 
         return cls(
             year=rec.get("Year"),
-            bill_number=rec.get("BillNumber"),
+            bill_number=rec.get("BillNumber") or rec.get("BillNo"),
             parcel_number=(rec.get("ParcelNumber") or "").strip(),
-            owner_name=rec.get("OwnerName1") or rec.get("Name") or "",
+            owner_name=rec.get("Name") or rec.get("LegalOwner") or rec.get("OwnerName1") or "",
             owner_address=owner_addr_str,
             situs_address=situs_addr_str,
             description=rec.get("Description") or "",
@@ -161,7 +162,7 @@ class TaxRecord:
                     "credit": te.get("Credit", 0),
                     "net_tax": te.get("NetTax", 0),
                 }
-                for te in (rec.get("TaxEntities") or [])
+                for te in (rec.get("TaxEntities") or rec.get("Jurisdictions") or [])
             ],
             raw=rec,
         )
@@ -274,11 +275,35 @@ class TaxScraper:
         }
         headers = {k: v for k, v in headers.items() if v}
 
-        resp = self.session.post(
-            url, data=json.dumps(payload), headers=headers, timeout=self.timeout
-        )
-        resp.raise_for_status()
+        resp = self._post_with_retry(url, payload, headers)
         return resp.json()
+
+    def _post_with_retry(
+        self, url: str, payload: Dict[str, Any], headers: Dict[str, str],
+        max_attempts: int = 5, backoff_seconds: float = 5,
+    ) -> requests.Response:
+        """POSTs with retries on 502/503/504 -- these are transient
+        gateway/upstream-timeout errors from a slow county backend
+        (seen on Dawson), not something a client-side timeout value can
+        fix. Retries with increasing backoff before giving up."""
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self.session.post(
+                    url, data=json.dumps(payload), headers=headers, timeout=self.timeout
+                )
+                if resp.status_code in (502, 503, 504) and attempt < max_attempts:
+                    time.sleep(backoff_seconds * attempt)
+                    continue
+                resp.raise_for_status()
+                return resp
+            except requests.exceptions.RequestException as e:
+                last_exc = e
+                if attempt < max_attempts:
+                    time.sleep(backoff_seconds * attempt)
+                    continue
+                raise
+        raise last_exc  # pragma: no cover
 
     # ------------------------------------------------------------------
     # Step 3 (optional): Autocomplete -- useful for verifying exact parcel match
