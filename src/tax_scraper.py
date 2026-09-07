@@ -236,9 +236,19 @@ class TaxScraper:
         year: Optional[int] = None,
         referer: Optional[str] = None,
         skip: int = 0,
+        search_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Calls the Records API for a given county GUID + parcel.
-        year=None returns records for all years."""
+        year=None returns records for all years.
+
+        search_token: the SearchToken from a previous unfiltered call to the
+        same parcel. The website itself does a 2-step flow: (1) search the
+        parcel with no year facet, (2) THEN check a year checkbox, which
+        re-queries using the SearchToken from step 1 plus the Years facet.
+        Some counties (e.g. Dawson) return the wrong record if you skip
+        straight to a single filtered call without that token -- see
+        TaxScraper.search() which does this 2-step flow automatically
+        whenever `year` is given."""
 
         url = f"{CLOUDFRONT_BASE}/data/{guid}/Wildfire/Records"
 
@@ -257,6 +267,10 @@ class TaxScraper:
             "Content-Type": "application/json;charset=UTF-8",
             "Origin": referer.rstrip("/") if referer else None,
             "Referer": referer if referer else None,
+            # Confirmed via DevTools: the site sends the previous search's
+            # SearchToken back as a REQUEST HEADER (not a body field) when
+            # applying a facet filter (e.g. checking a Year checkbox).
+            "SearchToken": search_token,
         }
         headers = {k: v for k, v in headers.items() if v}
 
@@ -309,9 +323,25 @@ class TaxScraper:
         county_url = county_url.rstrip("/")
         used_guid = guid or self.detect_guid(county_url)
 
-        data = self.fetch_records(
-            guid=used_guid, parcel=parcel, year=year, referer=county_url
-        )
+        if year is not None:
+            # Step A: unfiltered search first (this is what the website does
+            # the instant you type the parcel in, before you touch the Years
+            # checkboxes). This gives us a valid SearchToken.
+            initial = self.fetch_records(
+                guid=used_guid, parcel=parcel, year=None, referer=county_url
+            )
+            token = initial.get("SearchToken")
+
+            # Step B: now filter by year, passing that SearchToken along --
+            # same as when a user checks a Years checkbox on the site.
+            data = self.fetch_records(
+                guid=used_guid, parcel=parcel, year=year,
+                referer=county_url, search_token=token,
+            )
+        else:
+            data = self.fetch_records(
+                guid=used_guid, parcel=parcel, year=None, referer=county_url
+            )
 
         records = [TaxRecord.from_api(r) for r in data.get("Records", [])]
 
