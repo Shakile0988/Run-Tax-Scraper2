@@ -178,7 +178,7 @@ class TaxScraperError(Exception):
 
 
 class TaxScraper:
-    def __init__(self, timeout: int = 20, user_agent: Optional[str] = None):
+    def __init__(self, timeout: Optional[int] = None, user_agent: Optional[str] = None):
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({
