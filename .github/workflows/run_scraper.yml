@@ -68,6 +68,7 @@ jobs:
           IN_COUNTY_URL: ${{ github.event.inputs.county_url }}${{ github.event.client_payload.county_url }}
           IN_PARCEL: ${{ github.event.inputs.parcel }}${{ github.event.client_payload.parcel }}
           IN_YEAR: ${{ github.event.inputs.year }}${{ github.event.client_payload.year }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           cd src
 
