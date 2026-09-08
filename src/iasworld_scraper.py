@@ -139,7 +139,10 @@ class IasWorldScraper:
     def _get_search_page(self, base: str) -> str:
         url = f"{base}{SEARCH_PATH}"
         resp = self.session.get(url, timeout=self.timeout)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise IasWorldError(
+                f"GET {url} -> {resp.status_code}. Body[:500]: {resp.text[:500]!r}"
+            )
         return resp.text
 
     # ------------------------------------------------------------------
@@ -148,6 +151,15 @@ class IasWorldScraper:
     def _post_search(self, base: str, parcel: str, year: Optional[int]) -> str:
         html = self._get_search_page(base)
         hidden = self._extract_hidden_fields(html)
+
+        if not hidden.get("__VIEWSTATE"):
+            title_m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+            title = title_m.group(1).strip() if title_m else "?"
+            raise IasWorldError(
+                f"__VIEWSTATE not found on search page (title: {title!r}) -- "
+                f"likely a disclaimer/interstitial page, not the search form. "
+                f"Body[:500]: {html[:500]!r}"
+            )
 
         form: Dict[str, str] = {
             "ScriptManager1_TSM": hidden["ScriptManager1_TSM"],
@@ -192,7 +204,10 @@ class IasWorldScraper:
                 "Origin": base.split("/PT")[0] if "/PT" in base else base,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise IasWorldError(
+                f"POST {url} -> {resp.status_code}. Body[:800]: {resp.text[:800]!r}"
+            )
         return resp.text
 
     # ------------------------------------------------------------------
