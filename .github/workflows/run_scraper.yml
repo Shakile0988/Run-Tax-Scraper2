@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       county:
-        description: "Known county shortcut (brantley, chattooga, dawson, hall, pierce, union). Leave blank if using county_url instead."
+        description: "Known county shortcut: Phase1 (brantley, chattooga, dawson, hall, pierce, union) or Phase2 (walker, forsyth, liberty, pickens, quitman, carroll). Leave blank if using county_url instead."
         required: false
         default: ""
       county_url:
