@@ -167,9 +167,11 @@ class IasWorldScraper:
         return " | ".join(parts)
 
     @staticmethod
-    def _compact_html(html: str, max_len: int = 6000) -> str:
-        """Strips huge VIEWSTATE/EVENTVALIDATION blobs out of the HTML so a
-        diagnostic dump stays readable, then truncates."""
+    def _compact_html(html: str, max_len: int = 8000) -> str:
+        """Strips huge VIEWSTATE/EVENTVALIDATION blobs and irrelevant
+        header/footer boilerplate out of the HTML so a diagnostic dump
+        stays readable -- keeps just the <form>...</form> body, which is
+        where hidden fields / buttons / onclick JS actually live."""
         html = re.sub(
             r'(name="__VIEWSTATE"[^>]*value=")[^"]*(")',
             r"\1...TRUNCATED...\2", html,
@@ -178,6 +180,9 @@ class IasWorldScraper:
             r'(name="__EVENTVALIDATION"[^>]*value=")[^"]*(")',
             r"\1...TRUNCATED...\2", html,
         )
+        m = re.search(r"<form\b.*?</form>", html, re.I | re.S)
+        if m:
+            html = m.group(0)
         return html[:max_len]
 
     def _get_search_page(self, base: str) -> str:
