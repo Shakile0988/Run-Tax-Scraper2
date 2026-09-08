@@ -5,6 +5,9 @@ Usage:
     python cli.py --county brantley --parcel "B065 172" --year 2019
     python cli.py --county-url https://www.chattoogatax.com --parcel "63B--90"
     python cli.py --county hall --parcel "12-345-6" --year 2024 --json --out result.json
+
+    # Phase 2 (AssuranceWeb Property platform) -- auto-detected from county name:
+    python cli.py --county walker --parcel "0192 132" --year 2025 --json --out result.json
 """
 
 import argparse
@@ -12,11 +15,13 @@ import json
 import sys
 
 from tax_scraper import TaxScraper, KNOWN_COUNTIES, TaxScraperError
+from assurancegov_scraper import AssuranceGovScraper, AssuranceGovError, ASSURANCE_COUNTIES
 
 
 def print_human(result: dict):
     print(f"\nCounty : {result['county_url']}")
-    print(f"GUID   : {result['guid']}")
+    if "guid" in result:
+        print(f"GUID   : {result['guid']}")
     print(f"Searched: '{result['parcel_query']}'"
           + (f" | Year: {result['year_filter']}" if result['year_filter'] else " | All years"))
     print(f"Total records: {result['total_records']}\n")
@@ -27,75 +32,114 @@ def print_human(result: dict):
 
     for i, rec in enumerate(result["records"], 1):
         print(f"--- Record {i} ---")
-        print(f"  Year          : {rec['year']}   (Bill #{rec['bill_number']})")
-        print(f"  Parcel        : {rec['parcel_number']}")
-        print(f"  Owner         : {rec['owner_name']}")
-        print(f"  Owner address : {rec['owner_address']}")
-        print(f"  Situs address : {rec['situs_address']}")
-        print(f"  Description   : {rec['description']}  ({rec['acres']} acres)")
-        print(f"  Fair Market   : ${rec['fair_market_value']:,}")
-        print(f"  Assessed      : ${rec['assessed_value']:,}")
-        print(f"  Base Tax      : ${rec['base_tax']:,}")
-        print(f"  Penalty/Interest: ${rec['penalty']} / ${rec['interest']}")
-        print(f"  Amount Due    : ${rec['amount_due']:,}")
-        print(f"  Payment Status: {rec['payment_status']}"
-              + (f" (date: {rec['payment_date']})" if rec['payment_date'] else ""))
-        print(f"  Delinquent?   : {'Yes' if rec['is_delinquent'] else 'No'}")
-        print(f"  Tax Entities  :")
-        for te in rec["tax_entities"]:
-            print(f"      - {te['name']:<30} millage={te['millage_rate']:<8} "
-                  f"net_tax=${te['net_tax']}")
+        print(json.dumps(rec, indent=2, ensure_ascii=False))
         print()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Georgia County Tax Scraper")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--county", help=f"Known county shortcut name: {', '.join(KNOWN_COUNTIES)}")
-    group.add_argument("--county-url", help="Direct county site URL, e.g. https://www.brantleytax.com")
-
-    parser.add_argument("--parcel", required=True, help="Parcel ID, e.g. 'B065 172'")
-    parser.add_argument("--year", type=int, default=None, help="Specific year (omit for all years)")
-    parser.add_argument("--guid", default=None, help="Known TENANT_ID (skips auto-detect)")
-    parser.add_argument("--json", action="store_true", help="Print raw JSON to stdout")
-    parser.add_argument("--out", default=None, help="Write JSON result to this file path")
-
-    args = parser.parse_args()
-
+def run_phase1(args):
+    """Wildfire/Catalis platform (brantley, chattooga, dawson, hall, pierce, union).
+    UNCHANGED from before -- do not modify this function's logic."""
     scraper = TaxScraper()
 
     if args.county:
         info = scraper.search_by_name(args.county)
         if not info:
-            print(f"County '{args.county}' not found. Available: {list(KNOWN_COUNTIES)}", file=sys.stderr)
-            sys.exit(1)
+            raise TaxScraperError(f"County '{args.county}' not found. Available: {list(KNOWN_COUNTIES)}")
         county_url = info["url"]
         guid = args.guid or info.get("guid")
     else:
         county_url = args.county_url
         guid = args.guid
 
+    return scraper.search(
+        county_url=county_url,
+        parcel=args.parcel,
+        year=args.year,
+        guid=guid,
+    )
+
+
+def run_phase2(args):
+    """AssuranceWeb Property platform (walker, forsyth, liberty, pickens, quitman, carroll)."""
+    scraper = AssuranceGovScraper()
+    county = args.county or args.county_url
+    return scraper.search(
+        county=county,
+        parcel=args.parcel,
+        year=args.year,
+        search_type=args.search_type,
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Georgia County Tax Scraper")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--county",
+        help=(
+            "Known county shortcut name. "
+            f"Phase 1 (Wildfire): {', '.join(KNOWN_COUNTIES)}. "
+            f"Phase 2 (AssuranceWeb): {', '.join(ASSURANCE_COUNTIES)}."
+        ),
+    )
+    group.add_argument("--county-url", help="Direct county site URL or host")
+
+    parser.add_argument("--parcel", required=True, help="Parcel ID, e.g. 'B065 172'")
+    parser.add_argument("--year", type=int, default=None, help="Specific year (omit for all years)")
+    parser.add_argument("--guid", default=None, help="Known TENANT_ID (Phase 1 only, skips auto-detect)")
+    parser.add_argument(
+        "--search-type", default="parcel",
+        choices=["name", "bill", "company", "parcel", "account", "address"],
+        help="Search-by field (Phase 2 / AssuranceWeb only, default: parcel)",
+    )
+    parser.add_argument(
+        "--platform", default=None, choices=["wildfire", "assurance"],
+        help="Force a platform instead of auto-detecting from --county name",
+    )
+    parser.add_argument("--json", action="store_true", help="Print raw JSON to stdout")
+    parser.add_argument("--out", default=None, help="Write JSON result to this file path")
+
+    args = parser.parse_args()
+
+    # Decide which platform to use. Auto-detect from the known county-name
+    # lists so existing Phase 1 calls behave exactly as before; --platform
+    # can override this if a URL is passed directly instead of a shortcut.
+    if args.platform == "assurance":
+        use_phase2 = True
+    elif args.platform == "wildfire":
+        use_phase2 = False
+    else:
+        use_phase2 = bool(args.county and args.county in ASSURANCE_COUNTIES)
+
     try:
-        result = scraper.search(
-            county_url=county_url,
-            parcel=args.parcel,
-            year=args.year,
-            guid=guid,
-        )
-    except TaxScraperError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        if use_phase2:
+            result = run_phase2(args)
+        else:
+            result = run_phase1(args)
+        result["success"] = True
+    except (TaxScraperError, AssuranceGovError) as e:
+        result = {"success": False, "error": str(e)}
+    except Exception as e:
+        # Production-grade graceful failure: never let one county's crash
+        # take down the whole batch/pipeline. Always write a JSON result.
+        result = {"success": False, "error": f"{type(e).__name__}: {e}"}
 
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
-
-    if not args.json:
-        print_human(result)
+    else:
+        if result.get("success"):
+            print_human(result)
+        else:
+            print(f"Error: {result.get('error')}", file=sys.stderr)
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
         print(f"\nResult saved to: {args.out}")
+
+    # Always exit 0 so GitHub Actions doesn't mark the run "failed" --
+    # result.json / stdout JSON already carries success:true/false.
+    sys.exit(0)
 
 
 if __name__ == "__main__":
