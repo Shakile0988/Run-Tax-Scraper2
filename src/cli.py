@@ -62,7 +62,7 @@ def run_phase1(args):
 def run_phase2(args):
     """AssuranceWeb Property platform (walker, forsyth, liberty, pickens, quitman, carroll)."""
     scraper = AssuranceGovScraper()
-    county = args.county or args.county_url
+    county = (args.county or args.county_url or "").strip()
     return scraper.search(
         county=county,
         parcel=args.parcel,
@@ -104,12 +104,15 @@ def main():
     # Decide which platform to use. Auto-detect from the known county-name
     # lists so existing Phase 1 calls behave exactly as before; --platform
     # can override this if a URL is passed directly instead of a shortcut.
+    # Case-insensitive so "Walker", "WALKER", "walker" all work the same.
+    county_key = args.county.strip().lower() if args.county else None
+
     if args.platform == "assurance":
         use_phase2 = True
     elif args.platform == "wildfire":
         use_phase2 = False
     else:
-        use_phase2 = bool(args.county and args.county in ASSURANCE_COUNTIES)
+        use_phase2 = bool(county_key and county_key in ASSURANCE_COUNTIES)
 
     try:
         if use_phase2:
