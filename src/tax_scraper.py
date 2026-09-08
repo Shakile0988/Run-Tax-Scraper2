@@ -179,7 +179,8 @@ class TaxScraperError(Exception):
 
 
 class TaxScraper:
-    def __init__(self, timeout: Optional[int] = None, user_agent: Optional[str] = None):
+    def __init__(self, timeout: Optional[int] = None, user_agent: Optional[str] = None,
+                 proxy_url: Optional[str] = None):
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({
@@ -189,8 +190,57 @@ class TaxScraper:
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
         })
         self._guid_cache: Dict[str, str] = {}
+
+        # Optional proxy support: pass proxy_url explicitly, or set the
+        # PROXY_URL env var (e.g. as a GitHub Actions secret). Format:
+        # "http://user:pass@host:port" or "http://host:port".
+        #
+        # No-signup free option: set USE_FREE_PROXY=1 to pull a random
+        # public proxy from ProxyScrape's free list (no account needed).
+        # WARNING: public/open proxies have a very low success rate
+        # (roughly ~2%) against bot-protected sites and are frequently
+        # dead or slow. This is a best-effort fallback, not a real fix --
+        # a paid/managed proxy is far more likely to actually work.
+        import os
+        resolved_proxy = proxy_url or os.environ.get("PROXY_URL")
+        if not resolved_proxy and os.environ.get("USE_FREE_PROXY"):
+            resolved_proxy = self._get_free_public_proxy()
+        if resolved_proxy:
+            self.session.proxies.update({
+                "http": resolved_proxy,
+                "https": resolved_proxy,
+            })
+
+    @staticmethod
+    def _get_free_public_proxy() -> Optional[str]:
+        """Grabs one random HTTP proxy from ProxyScrape's free, no-signup
+        public list. No reliability guarantee -- see the warning above."""
+        try:
+            resp = requests.get(
+                "https://api.proxyscrape.com/v4/free-proxy-list/get",
+                params={
+                    "request": "display_proxies",
+                    "protocol": "http",
+                    "proxy_format": "protocolipport",
+                    "format": "text",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            lines = [ln.strip() for ln in resp.text.splitlines() if ln.strip()]
+            if not lines:
+                return None
+            import random
+            return random.choice(lines)
+        except requests.RequestException:
+            return None
 
     # ------------------------------------------------------------------
     # Step 1: Detect the county's TENANT_ID (GUID) from its HTML
