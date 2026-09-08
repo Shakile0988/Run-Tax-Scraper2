@@ -234,12 +234,43 @@ class AssuranceGovScraper:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def _find_radio_values(self, html, name_attr="PropertySearchType"):
+        """Debug helper: find the actual value="" attributes for a radio
+        group by name, so we can confirm PropertySearchType's real values
+        (e.g. is it "parcel" or "Parcel"?) instead of guessing."""
+        pattern = re.compile(
+            rf'<input[^>]*name="{re.escape(name_attr)}"[^>]*value="([^"]*)"',
+            re.IGNORECASE,
+        )
+        return pattern.findall(html)
+
     def search(self, county, parcel, year=None, search_type="parcel", fetch_details=True):
         base_url = self._base_url(county)
-        token = self._get_antiforgery_token(base_url)
+        search_url = f"{base_url}/Property/Search"
 
+        get_resp = self.session.get(search_url, timeout=self.timeout)
+        get_resp.raise_for_status()
+
+        token_match = re.search(
+            r'name="__RequestVerificationToken"[^>]*value="([^"]+)"',
+            get_resp.text,
+        )
+        if not token_match:
+            raise AssuranceGovError(
+                "Could not find __RequestVerificationToken on the search page."
+            )
+        token = token_match.group(1)
+        radio_values = self._find_radio_values(get_resp.text)
+
+        # NOTE: the search form uses old-style ASP.NET MVC "Ajax.BeginForm"
+        # (data-ajax="true", data-ajax-mode="replace",
+        # data-ajax-update="#pt-results-panel-data"). That means the POST
+        # response itself IS the results-panel HTML (with the grid + data
+        # embedded), NOT a small JSON ack, and NOT something stored
+        # server-side for a later GET to pick up. Confirmed from the raw
+        # page source (2026-09-08).
         form_data = {
-            "PropertySearchYear": str(year) if year else "",
+            "PropertySearchYear": str(year) if year else "0",  # "0" = the kendo dropdown's "-- ANY --" value
             "PropertySearchType": SEARCH_TYPE_MAP.get(search_type, search_type),
             "UseContains": "False",
             "SearchCriteria.Criteria1": parcel,
@@ -247,37 +278,56 @@ class AssuranceGovScraper:
             "SelectedParcels": "",
             "__RequestVerificationToken": token,
         }
-        headers = {"X-Requested-With": "XMLHttpRequest"}
+        headers = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": search_url,
+            "Origin": base_url,
+        }
 
         post_resp = self.session.post(
-            f"{base_url}/Property/Search",
+            search_url,
             data=form_data,
             headers=headers,
             timeout=self.timeout,
         )
         post_resp.raise_for_status()
 
-        try:
-            ack = post_resp.json()
-        except ValueError:
-            ack = {}
+        # Primary path: parse the grid directly out of the POST response.
+        records = self._parse_grid(post_resp.text, base_url)
 
-        if ack.get("result") is False:
-            return {
-                "county_url": base_url,
-                "parcel_query": parcel,
-                "year_filter": year,
-                "total_records": 0,
-                "records": [],
-                "message": ack.get("message") or "Search returned no results.",
-            }
+        followup_status = None
+        followup_len = None
+        if not records:
+            # Fallback in case this particular deployment DOES store
+            # results server-side (behavior can vary by county instance).
+            grid_resp = self.session.get(search_url, timeout=self.timeout)
+            grid_resp.raise_for_status()
+            followup_status = grid_resp.status_code
+            followup_len = len(grid_resp.text)
+            records = self._parse_grid(grid_resp.text, base_url)
 
-        # Results are rendered server-side on a follow-up GET of the same
-        # page (the search itself just stores results in the session).
-        grid_resp = self.session.get(f"{base_url}/Property/Search", timeout=self.timeout)
-        grid_resp.raise_for_status()
+        debug = {
+            "search_type_sent": form_data["PropertySearchType"],
+            "year_sent": form_data["PropertySearchYear"],
+            "radio_values_found_on_page": radio_values,
+            "post_status": post_resp.status_code,
+            "post_content_type": post_resp.headers.get("Content-Type"),
+            "post_response_snippet": post_resp.text[:800],
+            "post_html_contains_Data_key": '"Data"' in post_resp.text,
+            "followup_get_status": followup_status,
+            "followup_html_length": followup_len,
+        }
 
-        records = self._parse_grid(grid_resp.text, base_url)
+        result = {
+            "county_url": base_url,
+            "parcel_query": parcel,
+            "year_filter": year,
+            "total_records": len(records),
+            "records": records,
+        }
+        if not records:
+            result["message"] = ack.get("message") or "No records parsed."
+            result["debug"] = debug
 
         if fetch_details:
             for rec in records:
@@ -289,10 +339,4 @@ class AssuranceGovScraper:
                     except Exception as e:
                         rec["details"] = {"error": str(e)}
 
-        return {
-            "county_url": base_url,
-            "parcel_query": parcel,
-            "year_filter": year,
-            "total_records": len(records),
-            "records": records,
-        }
+        return result
