@@ -379,40 +379,76 @@ class IasWorldScraper:
     # ------------------------------------------------------------------
     @staticmethod
     def _extract_detail_fields(html: str) -> Dict[str, Optional[str]]:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text("\n", strip=True)
+        """Datalet detail pages render fields in two different table
+        shapes (confirmed against a real Chatham Datalet page):
 
-        def grab(label: str) -> Optional[str]:
-            # Try table-cell based extraction first.
-            label_td = soup.find(string=re.compile(rf"^{re.escape(label)}\s*:?\s*$"))
-            if label_td:
-                parent = label_td.find_parent(["td", "th", "div", "span"])
-                if parent:
-                    sib = parent.find_next_sibling(["td", "div", "span"])
+          Shape A -- side-by-side label/value pairs in the same <tr>:
+              <td class="DataletSideHeading">Status</td>
+              <td class="DataletData">ACTIVE</td>
+          Used for: Status, Alternate ID, Bill #, Tax District/Description,
+          Legal Description, Appeal Status, Property Class, Mortgage
+          Company, Exemptions.
+
+          Shape B -- a header <tr> of column labels followed by a sibling
+          <tr> of same-column-index data cells:
+              <tr><td class="DataletTopHeading">Current Owner</td>...</tr>
+              <tr><td class="DataletData">OHMER LAUREN B</td>...</tr>
+          Used for: Parcel Status / Deferral Exist / Total Millage Rate,
+          and Current Owner / Co-Owner / Care Of / Mailing Address.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        def norm(s: str) -> str:
+            return re.sub(r"\s+", " ", s).strip()
+
+        def grab_side(label: str) -> Optional[str]:
+            for td in soup.find_all("td", class_="DataletSideHeading"):
+                if norm(td.get_text(" ", strip=True)) == label:
+                    sib = td.find_next_sibling("td", class_="DataletData")
                     if sib:
                         val = sib.get_text(strip=True)
-                        if val:
-                            return val
-            # Fallback: line-based text search "Label\nValue"
-            m = re.search(rf"{re.escape(label)}\s*:?\s*\n?([^\n]+)", text)
-            if m:
-                val = m.group(1).strip()
-                if val and val.lower() != label.lower():
-                    return val
+                        return val or None
             return None
 
+        def grab_column(label: str) -> Optional[str]:
+            for tr in soup.find_all("tr"):
+                headers = tr.find_all("td", class_="DataletTopHeading")
+                if not headers:
+                    continue
+                texts = [norm(h.get_text(" ", strip=True)) for h in headers]
+                if label in texts:
+                    idx = texts.index(label)
+                    data_row = tr.find_next_sibling("tr")
+                    if data_row:
+                        data_cells = data_row.find_all("td", class_="DataletData")
+                        if idx < len(data_cells):
+                            val = data_cells[idx].get_text(strip=True)
+                            return val or None
+            return None
+
+        parid = None
+        m = re.search(r"PARID:\s*([^<\n]+)", html)
+        if m:
+            parid = m.group(1).strip()
+
         return {
-            "parid": grab("PARID"),
-            "owner_name": grab("Most Current Owner") or grab("Current Owner"),
-            "mailing_address": grab("Mailing Address"),
-            "status": grab("Status"),
-            "alternate_id": grab("Alternate ID"),
-            "bill_number": grab("Bill #"),
-            "tax_district": grab("Tax District/Description") or grab("Tax District"),
-            "legal_description": grab("Legal Description"),
-            "property_class": grab("Property Class"),
-            "millage_rate": grab("Total Millage Rate") or grab("Millage Rate"),
-            "parcel_status": grab("Parcel Status"),
+            "parid": parid,
+            "status": grab_side("Status"),
+            "alternate_id": grab_side("Alternate ID"),
+            "bill_number": grab_side("Bill #"),
+            "tax_district": grab_side("Tax District/Description") or grab_side("Tax District"),
+            "legal_description": grab_side("Legal Description"),
+            "appeal_status": grab_side("Appeal Status"),
+            "property_class": grab_side("Property Class"),
+            "mortgage_company": grab_side("Mortgage Company"),
+            "exemptions": grab_side("Exemptions"),
+            "parcel_status": grab_column("Parcel Status"),
+            "deferral_exist": grab_column("Deferral Exist"),
+            "millage_rate": grab_column("Total Millage Rate"),
+            "owner_name": grab_column("Current Owner"),
+            "co_owner": grab_column("Co-Owner"),
+            "care_of": grab_column("Care Of"),
+            "mailing_address": grab_column("Mailing Address"),
         }
 
     # ------------------------------------------------------------------
@@ -457,11 +493,6 @@ class IasWorldScraper:
                 try:
                     detail_html = self._open_detail(base, search_html, link)
                     record["detail"] = self._extract_detail_fields(detail_html)
-                    # TEMP DEBUG: dump the real Datalet HTML (compacted) so
-                    # the label->value extractor can be fixed against real
-                    # markup instead of guessing. Remove this line once the
-                    # extractor is confirmed correct.
-                    record["_debug_detail_html"] = self._compact_html(detail_html, max_len=8000)
                 except requests.RequestException as e:
                     record["detail"] = None
                     record["detail_error"] = str(e)
