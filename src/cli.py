@@ -16,6 +16,7 @@ import sys
 
 from tax_scraper import TaxScraper, KNOWN_COUNTIES, TaxScraperError
 from assurancegov_scraper import AssuranceGovScraper, AssuranceGovError, ASSURANCE_COUNTIES
+from iasworld_scraper import IasWorldScraper, IasWorldError, IASWORLD_COUNTIES
 
 
 def print_human(result: dict):
@@ -71,6 +72,17 @@ def run_phase2(args):
     )
 
 
+def run_phase3(args):
+    """iasWorld / Tyler Technologies platform (chatham, clayton, dekalb)."""
+    scraper = IasWorldScraper()
+    county = (args.county or args.county_url or "").strip()
+    return scraper.search(
+        county=county,
+        parcel=args.parcel,
+        year=args.year,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Georgia County Tax Scraper")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -79,7 +91,8 @@ def main():
         help=(
             "Known county shortcut name. "
             f"Phase 1 (Wildfire): {', '.join(KNOWN_COUNTIES)}. "
-            f"Phase 2 (AssuranceWeb): {', '.join(ASSURANCE_COUNTIES)}."
+            f"Phase 2 (AssuranceWeb): {', '.join(ASSURANCE_COUNTIES)}. "
+            f"Phase 3 (iasWorld): {', '.join(IASWORLD_COUNTIES)}."
         ),
     )
     group.add_argument("--county-url", help="Direct county site URL or host")
@@ -93,7 +106,7 @@ def main():
         help="Search-by field (Phase 2 / AssuranceWeb only, default: parcel)",
     )
     parser.add_argument(
-        "--platform", default=None, choices=["wildfire", "assurance"],
+        "--platform", default=None, choices=["wildfire", "assurance", "iasworld"],
         help="Force a platform instead of auto-detecting from --county name",
     )
     parser.add_argument("--json", action="store_true", help="Print raw JSON to stdout")
@@ -108,19 +121,27 @@ def main():
     county_key = args.county.strip().lower() if args.county else None
 
     if args.platform == "assurance":
-        use_phase2 = True
+        phase = 2
+    elif args.platform == "iasworld":
+        phase = 3
     elif args.platform == "wildfire":
-        use_phase2 = False
+        phase = 1
+    elif county_key and county_key in IASWORLD_COUNTIES:
+        phase = 3
+    elif county_key and county_key in ASSURANCE_COUNTIES:
+        phase = 2
     else:
-        use_phase2 = bool(county_key and county_key in ASSURANCE_COUNTIES)
+        phase = 1
 
     try:
-        if use_phase2:
+        if phase == 3:
+            result = run_phase3(args)
+        elif phase == 2:
             result = run_phase2(args)
         else:
             result = run_phase1(args)
         result["success"] = True
-    except (TaxScraperError, AssuranceGovError) as e:
+    except (TaxScraperError, AssuranceGovError, IasWorldError) as e:
         result = {"success": False, "error": str(e)}
     except Exception as e:
         # Production-grade graceful failure: never let one county's crash
