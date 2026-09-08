@@ -97,9 +97,10 @@ class AssuranceGovScraper:
     # Helpers
     # ------------------------------------------------------------------
     def _base_url(self, county_key_or_url_or_host):
-        """Accept a known shortcut key, a full URL, or a bare host."""
-        if county_key_or_url_or_host in ASSURANCE_COUNTIES:
-            host = ASSURANCE_COUNTIES[county_key_or_url_or_host]
+        """Accept a known shortcut key (case-insensitive), a full URL, or a bare host."""
+        key = county_key_or_url_or_host.strip().lower()
+        if key in ASSURANCE_COUNTIES:
+            host = ASSURANCE_COUNTIES[key]
         else:
             host = (
                 county_key_or_url_or_host
