@@ -445,10 +445,15 @@ class IasWorldScraper:
             "parcel_status": grab_column("Parcel Status"),
             "deferral_exist": grab_column("Deferral Exist"),
             "millage_rate": grab_column("Total Millage Rate"),
-            "owner_name": grab_column("Current Owner"),
-            "co_owner": grab_column("Co-Owner"),
-            "care_of": grab_column("Care Of"),
-            "mailing_address": grab_column("Mailing Address"),
+            "owner_name": grab_column("Current Owner") or grab_side("Owner"),
+            "co_owner": grab_column("Co-Owner") or grab_side("Co-Owner"),
+            "care_of": grab_column("Care Of") or grab_side("Care of Information"),
+            "mailing_address": grab_column("Mailing Address") or grab_side("Current Owner Address"),
+            # DeKalb-style extra fields (Chatham doesn't have these -> null there)
+            "old_parcel_id": grab_side("Old Parcel ID"),
+            "land_use_code": grab_side("Land Use Code"),
+            "zoning": grab_side("Zoning"),
+            "exemption_codes": grab_side("Exemption Codes"),
         }
 
     # ------------------------------------------------------------------
@@ -493,11 +498,6 @@ class IasWorldScraper:
                 try:
                     detail_html = self._open_detail(base, search_html, link)
                     record["detail"] = self._extract_detail_fields(detail_html)
-                    # TEMP DEBUG (dekalb/clayton): dump the real Datalet
-                    # HTML so the extractor's CSS-class assumptions (built
-                    # against Chatham) can be adapted per-county skin.
-                    # Remove once dekalb/clayton are confirmed correct.
-                    record["_debug_detail_html"] = self._compact_html(detail_html, max_len=8000)
                 except requests.RequestException as e:
                     record["detail"] = None
                     record["detail_error"] = str(e)
