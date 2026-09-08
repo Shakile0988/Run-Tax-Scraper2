@@ -65,6 +65,7 @@ to a Playwright-based approach like the separate Athens-Clarke scraper.
 import re
 import json
 from typing import Optional, Dict, Any, List
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -134,7 +135,36 @@ class IasWorldScraper:
                      "ScriptManager1_TSM"):
             el = soup.find("input", {"name": name}) or soup.find("input", {"id": name})
             fields[name] = el.get("value", "") if el else ""
+
+        # ScriptManager1_TSM's <input> always renders with value="" in the
+        # raw HTML -- the real value is normally filled in client-side by
+        # the Telerik ScriptManager JS from the combined-scripts URL
+        # (_TSM_CombinedScripts_=... on the Telerik.Web.UI.WebResource.axd
+        # <script> tag). Since we don't run JS, pull it from there instead.
+        m = re.search(r"_TSM_HiddenField_=ScriptManager1_TSM[^\"']*", html)
+        if m:
+            m2 = re.search(r"_TSM_CombinedScripts_=([^\"'&]*)", m.group(0))
+            if m2:
+                fields["ScriptManager1_TSM"] = unquote(m2.group(1))
+
         return fields
+
+    @staticmethod
+    def _dump_form_fields(html: str) -> str:
+        """Diagnostic-only: lists every input/select name + (for selects)
+        their option values, so a 500 on POST can be compared against the
+        real field names/allowed values instead of our hardcoded guesses."""
+        soup = BeautifulSoup(html, "html.parser")
+        parts = []
+        for inp in soup.find_all("input"):
+            n = inp.get("name")
+            if n:
+                parts.append(f"input:{n}={inp.get('value', '')!r}"[:80])
+        for sel in soup.find_all("select"):
+            n = sel.get("name") or sel.get("id")
+            opts = [o.get("value", o.get_text(strip=True)) for o in sel.find_all("option")]
+            parts.append(f"select:{n}=options{opts}"[:200])
+        return " | ".join(parts)
 
     def _get_search_page(self, base: str) -> str:
         url = f"{base}{SEARCH_PATH}"
@@ -206,7 +236,8 @@ class IasWorldScraper:
         )
         if resp.status_code >= 400:
             raise IasWorldError(
-                f"POST {url} -> {resp.status_code}. Body[:800]: {resp.text[:800]!r}"
+                f"POST {url} -> {resp.status_code}. "
+                f"Real search-page fields were: {self._dump_form_fields(html)}"
             )
         return resp.text
 
