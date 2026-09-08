@@ -46,6 +46,7 @@ run, "raw_html_snippet" is still included in the result so nothing is lost
 import re
 import json
 import requests
+from urllib.parse import quote
 from bs4 import BeautifulSoup
 
 
@@ -171,14 +172,14 @@ class AssuranceGovScraper:
         records = []
         for row in rows:
             parcel_info_id = row.get("ParcelInfoID")
-            account = row.get("Account")
+            account = (row.get("Account") or "").strip()
             records.append({
                 "parcel_info_id": parcel_info_id,
                 "account": account,
-                "parcel_number": row.get("ParcelNumberFormatted") or row.get("ParcelNumber"),
-                "owner_name": row.get("FullName"),
-                "situs_address": row.get("PhysAddress"),
-                "bill_number": row.get("BillNum"),
+                "parcel_number": (row.get("ParcelNumberFormatted") or row.get("ParcelNumber") or "").strip(),
+                "owner_name": (row.get("FullName") or "").strip(),
+                "situs_address": (row.get("PhysAddress") or "").strip(),
+                "bill_number": (row.get("BillNum") or "").strip(),
                 "year": row.get("tyYEAR"),
                 "billing_year": row.get("tyYEAR_BILLING"),
                 "total_tax": row.get("TotalTax"),
@@ -186,7 +187,7 @@ class AssuranceGovScraper:
                 "amount_paid": row.get("AmountPaid"),
                 "tax_type": row.get("TaxType"),
                 "details_url": (
-                    f"{base_url}/Property/Summary?pcliID={parcel_info_id}&pan={account}"
+                    f"{base_url}/Property/Summary?pcliID={parcel_info_id}&pan={quote(account)}"
                     if parcel_info_id is not None else None
                 ),
             })
@@ -207,30 +208,101 @@ class AssuranceGovScraper:
             return str(tail).strip()
         return None
 
+    def _table_after_label(self, soup, must_contain):
+        """Find the <table> whose header/first row text contains all of the
+        given substrings (case-insensitive) -- used to locate the Parcel
+        Info / Tax Information / Tax History tables regardless of their
+        exact position on the page."""
+        for table in soup.find_all("table"):
+            text = table.get_text(" ", strip=True).upper()
+            if all(s.upper() in text for s in must_contain):
+                return table
+        return None
+
+    def _parse_kv_table(self, table):
+        """Parse a 2-column label/value table (e.g. Parcel Info block) into
+        a flat dict. Empty spacer rows are skipped."""
+        result = {}
+        if table is None:
+            return result
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            label = cells[0].get_text(" ", strip=True)
+            value = cells[1].get_text(" ", strip=True)
+            if not label:
+                continue
+            result[label] = value
+        return result
+
+    def _parse_rows_table(self, table):
+        """Parse a header-row + data-rows table (Tax Information / Tax
+        History) into a list of {header: value} dicts."""
+        rows = []
+        if table is None:
+            return rows
+        trs = table.find_all("tr")
+        if not trs:
+            return rows
+        header_cells = trs[0].find_all(["th", "td"])
+        headers = [c.get_text(" ", strip=True) for c in header_cells]
+        for tr in trs[1:]:
+            cells = tr.find_all(["td", "th"])
+            if not cells or len(cells) != len(headers):
+                continue
+            row = {headers[i]: cells[i].get_text(" ", strip=True) for i in range(len(headers))}
+            # Skip fully-empty rows (spacer rows)
+            if any(v for v in row.values()):
+                rows.append(row)
+        return rows
+
     def get_details(self, base_url, parcel_info_id, account):
-        """Fetch and best-effort parse the /Property/Summary details page."""
-        url = f"{base_url}/Property/Summary?pcliID={parcel_info_id}&pan={account}"
+        """Fetch and parse the /Property/Summary details page.
+
+        Confirmed structure (2026-09-08, live fetch of a real Liberty
+        County parcel): three plain HTML <table> blocks on the page --
+        Parcel Info (2-column label/value), Tax Information (header row +
+        one row per bill/year), Tax History (header row + one row per
+        year). No Kendo grid / embedded JSON here, unlike the search page.
+        """
+        account = (account or "").strip()
+        url = f"{base_url}/Property/Summary?pcliID={parcel_info_id}&pan={quote(account)}"
         resp = self.session.get(url, timeout=self.timeout)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        details = {
+        page_text = soup.get_text(" ", strip=True)
+        if "Error!" in page_text and "problem retrieving" in page_text:
+            return {"details_url": url, "error": "Details page returned an error for this parcel/account."}
+
+        parcel_table = self._table_after_label(soup, ["BILL NUMBER", "OWNER"])
+        tax_info_table = self._table_after_label(soup, ["TAXES", "BALANCE DUE"])
+        tax_history_table = self._table_after_label(soup, ["APPRAISED", "ASSESSED"])
+
+        kv = self._parse_kv_table(parcel_table)
+
+        total_due_match = re.search(r"Total Due:\s*\$?\s*([\d,]+\.\d{2})", page_text)
+        last_payment_match = re.search(r"LAST PAYMENT DATE\s*([\d/]+)", page_text, re.I)
+        paid_by_match = re.search(r"PAID BY\s*([A-Z0-9 ,.'&-]+?)(?:\s{2,}|$|©)", page_text, re.I)
+
+        return {
             "details_url": url,
-            "bill_number": self._label_value(soup, "BILL NUMBER"),
-            "parcel": self._label_value(soup, "PARCEL"),
-            "account_number": self._label_value(soup, "ACCOUNT NUMBER"),
-            "owner": self._label_value(soup, "OWNER"),
-            "mailing_address": self._label_value(soup, "MAILING ADDRESS"),
-            "property_address": self._label_value(soup, "PROPERTY ADDRESS"),
-            "legal_description": self._label_value(soup, "LEGAL DESCRIPTION"),
-            "exempt_code": self._label_value(soup, "EXEMPT CODE"),
-            "tax_district": self._label_value(soup, "TAX DISTRICT"),
+            "bill_number": kv.get("BILL NUMBER"),
+            "parcel": kv.get("PARCEL"),
+            "account_number": kv.get("ACCOUNT NUMBER"),
+            "owner": kv.get("OWNER"),
+            "mailing_address": kv.get("MAILING ADDRESS"),
+            "property_address": kv.get("PROPERTY ADDRESS"),
+            "legal_description": kv.get("LEGAL DESCRIPTION"),
+            "exempt_code": kv.get("EXEMPT CODE"),
+            "tax_district": kv.get("TAX DISTRICT"),
+            "tax_information": self._parse_rows_table(tax_info_table),
+            "total_due": total_due_match.group(1) if total_due_match else None,
+            "last_payment_date": last_payment_match.group(1) if last_payment_match else None,
+            "paid_by": paid_by_match.group(1).strip() if paid_by_match else None,
+            "tax_history": self._parse_rows_table(tax_history_table),
         }
-        # Keep a trimmed raw snippet as a fallback in case the labels above
-        # don't match the live markup exactly (this parser was written from
-        # a screenshot, not the actual HTML).
-        details["raw_text_snippet"] = soup.get_text(" ", strip=True)[:2000]
-        return details
 
     # ------------------------------------------------------------------
     # Public API
