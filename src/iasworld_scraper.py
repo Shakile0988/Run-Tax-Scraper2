@@ -493,6 +493,11 @@ class IasWorldScraper:
                 try:
                     detail_html = self._open_detail(base, search_html, link)
                     record["detail"] = self._extract_detail_fields(detail_html)
+                    # TEMP DEBUG (dekalb/clayton): dump the real Datalet
+                    # HTML so the extractor's CSS-class assumptions (built
+                    # against Chatham) can be adapted per-county skin.
+                    # Remove once dekalb/clayton are confirmed correct.
+                    record["_debug_detail_html"] = self._compact_html(detail_html, max_len=8000)
                 except requests.RequestException as e:
                     record["detail"] = None
                     record["detail_error"] = str(e)
