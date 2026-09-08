@@ -65,7 +65,7 @@ to a Playwright-based approach like the separate Athens-Clarke scraper.
 import re
 import json
 from typing import Optional, Dict, Any, List
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -185,6 +185,43 @@ class IasWorldScraper:
             html = m.group(0)
         return html[:max_len]
 
+    def _accept_disclaimer(self, base: str, disclaimer_html: str) -> None:
+        """iasWorld shows a one-time Disclaimer.aspx interstitial for
+        sessions that haven't accepted it yet (no DISCLAIMER cookie). POST
+        the same 'Agree' click a browser would send; the resulting cookie
+        (set on this POST's response) is what makes the real search page
+        available on the next GET."""
+        soup = BeautifulSoup(disclaimer_html, "html.parser")
+        form = soup.find("form")
+        action = form.get("action") if form else None
+        if not action:
+            raise IasWorldError(
+                "Disclaimer page found but no <form action> to submit."
+            )
+        disclaimer_url = urljoin(f"{base}/search/", action)
+        hidden = self._extract_hidden_fields(disclaimer_html)
+        hd_url_el = soup.find("input", {"name": "hdURL"})
+        form_data = {
+            "__VIEWSTATE": hidden.get("__VIEWSTATE", ""),
+            "__VIEWSTATEGENERATOR": hidden.get("__VIEWSTATEGENERATOR", ""),
+            "__EVENTVALIDATION": hidden.get("__EVENTVALIDATION", ""),
+            "hdURL": hd_url_el.get("value", "") if hd_url_el else "",
+            "action": "",
+            "btAgree": "Agree",
+        }
+        resp = self.session.post(
+            disclaimer_url, data=form_data, timeout=self.timeout,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": f"{base}{SEARCH_PATH}",
+            },
+            allow_redirects=True,
+        )
+        if resp.status_code >= 400:
+            raise IasWorldError(
+                f"Disclaimer-accept POST {disclaimer_url} -> {resp.status_code}"
+            )
+
     def _get_search_page(self, base: str) -> str:
         url = f"{base}{SEARCH_PATH}"
         resp = self.session.get(url, timeout=self.timeout)
@@ -192,7 +229,19 @@ class IasWorldScraper:
             raise IasWorldError(
                 f"GET {url} -> {resp.status_code}. Body[:500]: {resp.text[:500]!r}"
             )
-        return resp.text
+        html = resp.text
+
+        if 'id="btAgree"' in html:
+            self._accept_disclaimer(base, html)
+            resp = self.session.get(url, timeout=self.timeout)
+            if resp.status_code >= 400:
+                raise IasWorldError(
+                    f"GET (post-disclaimer) {url} -> {resp.status_code}. "
+                    f"Body[:500]: {resp.text[:500]!r}"
+                )
+            html = resp.text
+
+        return html
 
     # ------------------------------------------------------------------
     # Step 1+2: load search page, then POST the parcel/year search
