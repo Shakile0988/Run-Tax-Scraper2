@@ -166,6 +166,20 @@ class IasWorldScraper:
             parts.append(f"select:{n}=options{opts}"[:200])
         return " | ".join(parts)
 
+    @staticmethod
+    def _compact_html(html: str, max_len: int = 6000) -> str:
+        """Strips huge VIEWSTATE/EVENTVALIDATION blobs out of the HTML so a
+        diagnostic dump stays readable, then truncates."""
+        html = re.sub(
+            r'(name="__VIEWSTATE"[^>]*value=")[^"]*(")',
+            r"\1...TRUNCATED...\2", html,
+        )
+        html = re.sub(
+            r'(name="__EVENTVALIDATION"[^>]*value=")[^"]*(")',
+            r"\1...TRUNCATED...\2", html,
+        )
+        return html[:max_len]
+
     def _get_search_page(self, base: str) -> str:
         url = f"{base}{SEARCH_PATH}"
         resp = self.session.get(url, timeout=self.timeout)
@@ -189,6 +203,16 @@ class IasWorldScraper:
                 f"__VIEWSTATE not found on search page (title: {title!r}) -- "
                 f"likely a disclaimer/interstitial page, not the search form. "
                 f"Body[:500]: {html[:500]!r}"
+            )
+
+        if "name=\"inpParid\"" not in html and "id=\"inpParid\"" not in html:
+            # Not the real search form -- almost certainly an interstitial
+            # (disclaimer / redirect) page that must be clicked through
+            # first. Dump the compacted HTML so the real flow can be seen.
+            raise IasWorldError(
+                "GET landed on an interstitial page (no inpParid field found) "
+                "-- likely a disclaimer/redirect page that must be submitted "
+                "first. Compact HTML:\n" + self._compact_html(html)
             )
 
         form: Dict[str, str] = {
