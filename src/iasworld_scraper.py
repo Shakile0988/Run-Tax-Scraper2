@@ -457,6 +457,11 @@ class IasWorldScraper:
                 try:
                     detail_html = self._open_detail(base, search_html, link)
                     record["detail"] = self._extract_detail_fields(detail_html)
+                    # TEMP DEBUG: dump the real Datalet HTML (compacted) so
+                    # the label->value extractor can be fixed against real
+                    # markup instead of guessing. Remove this line once the
+                    # extractor is confirmed correct.
+                    record["_debug_detail_html"] = self._compact_html(detail_html, max_len=8000)
                 except requests.RequestException as e:
                     record["detail"] = None
                     record["detail_error"] = str(e)
