@@ -231,7 +231,7 @@ class IasWorldScraper:
             )
         html = resp.text
 
-        if 'id="btAgree"' in html:
+        if BeautifulSoup(html, "html.parser").find(id="btAgree"):
             self._accept_disclaimer(base, html)
             resp = self.session.get(url, timeout=self.timeout)
             if resp.status_code >= 400:
@@ -259,7 +259,7 @@ class IasWorldScraper:
                 f"Body[:500]: {html[:500]!r}"
             )
 
-        if "name=\"inpParid\"" not in html and "id=\"inpParid\"" not in html:
+        if not BeautifulSoup(html, "html.parser").find("input", {"name": "inpParid"}):
             # Not the real search form -- almost certainly an interstitial
             # (disclaimer / redirect) page that must be clicked through
             # first. Dump the compacted HTML so the real flow can be seen.
