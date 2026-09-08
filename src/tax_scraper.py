@@ -61,7 +61,7 @@ KNOWN_COUNTIES: Dict[str, Dict[str, Optional[str]]] = {
     },
     "hall": {
         "url": "https://hallcountytax.org",
-        "guid": None,
+        "guid": "8ec1dbfa-15b6-4b52-8e09-9ead9f09196e",
     },
     "pierce": {
         "url": "https://piercegatax.com",
